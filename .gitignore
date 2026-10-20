@@ -1,0 +1,30 @@
+# 二进制文件
+*.exe
+*.dll
+*.pyd
+*.so
+*.dylib
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.spec
+
+# 文档
+*.pdf
+*.docx
+*.xlsx
+*.pptx
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# 系统
+.DS_Store
+Thumbs.db
