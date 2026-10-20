@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-文档批量转换工具
-功能：将 docx / xlsx / pptx 文件批量转换为 PDF / PNG序列 / JPG序列
+批量转换工具
+功能：
+  1. 文档 → PDF / PNG序列 / JPG序列（docx / xlsx / pptx）
+  2. 图片 → 合并为 PDF（png / jpg / jpeg / bmp / tiff）
 依赖：LibreOffice (soffice.exe)、PyMuPDF (fitz)
 """
 
@@ -21,8 +23,15 @@ except ImportError:
 # ──────────────────────────── 配置 ────────────────────────────
 DEFAULT_SOFFICE = r"C:\Program Files\LibreOffice\program\soffice.exe"
 DEFAULT_DPI = 150
-SUPPORTED_EXTS = {".docx", ".xlsx", ".pptx"}
-OUTPUT_FORMATS = ["PDF", "PNG 序列", "JPG 序列"]
+DOC_EXTS = {".docx", ".xlsx", ".pptx"}
+IMG_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".tiff", ".tif"}
+
+# 输出格式选项
+FMT_DOC_TO_PDF = "文档 → PDF"
+FMT_DOC_TO_PNG = "文档 → PNG 序列"
+FMT_DOC_TO_JPG = "文档 → JPG 序列"
+FMT_IMG_TO_PDF = "图片 → 合并为 PDF"
+OUTPUT_FORMATS = [FMT_DOC_TO_PDF, FMT_DOC_TO_PNG, FMT_DOC_TO_JPG, FMT_IMG_TO_PDF]
 
 
 # ──────────────────────────── 核心转换逻辑 ────────────────────────────
@@ -38,18 +47,18 @@ def find_soffice(custom_path=""):
     return None
 
 
-def collect_files(input_path):
-    """收集输入路径下所有支持的文件（单文件或文件夹递归）"""
+def collect_files(input_path, exts):
+    """收集输入路径下指定扩展名的文件"""
     files = []
     if os.path.isfile(input_path):
         ext = os.path.splitext(input_path)[1].lower()
-        if ext in SUPPORTED_EXTS:
+        if ext in exts:
             files.append(input_path)
     elif os.path.isdir(input_path):
         for root, _, names in os.walk(input_path):
             for n in names:
                 ext = os.path.splitext(n)[1].lower()
-                if ext in SUPPORTED_EXTS:
+                if ext in exts:
                     files.append(os.path.join(root, n))
     return sorted(files)
 
@@ -96,9 +105,8 @@ def pdf_to_images(pdf_path, output_dir, dpi, img_format, prefix, log_func, cance
         out_name = f"{base}_{i+1:02d}{ext}"
         out_path = os.path.join(output_dir, out_name)
         if img_format.upper() == "JPG":
-            # JPG 需要转 RGB（去掉 alpha 通道）
             if pix.alpha:
-                pix = fitz.Pixmap(pix, 0)  # 去掉 alpha
+                pix = fitz.Pixmap(pix, 0)
             pix.save(out_path, jpg_quality=90)
         else:
             pix.save(out_path)
@@ -107,12 +115,39 @@ def pdf_to_images(pdf_path, output_dir, dpi, img_format, prefix, log_func, cance
     return success, total
 
 
+def images_to_pdf(image_paths, output_pdf_path, log_func, cancel_check=None):
+    """将多张图片按顺序合并为一个 PDF"""
+    doc = fitz.open()
+    total = len(image_paths)
+    success = 0
+
+    for i, img_path in enumerate(image_paths):
+        if cancel_check and cancel_check():
+            break
+        try:
+            # 用图片创建新页面
+            img = fitz.open(img_path)
+            rect = img[0].rect
+            page = doc.new_page(width=rect.width, height=rect.height)
+            page.insert_image(rect, filename=img_path)
+            img.close()
+            success += 1
+            if (i + 1) % 10 == 0 or i == total - 1:
+                log_func(f"  已合并 {i+1}/{total} 张")
+        except Exception as e:
+            log_func(f"  跳过 {os.path.basename(img_path)}: {e}")
+
+    doc.save(output_pdf_path)
+    doc.close()
+    return success, total
+
+
 # ──────────────────────────── GUI 应用 ────────────────────────────
 class BatchConverterApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("文档批量转换工具 (Word/Excel/PPT → PDF/PNG/JPG) — 南无阿弥陀佛")
-        self.root.geometry("720x600")
+        self.root.title("批量转换工具 (文档↔图片) — 南无阿弥陀佛")
+        self.root.geometry("740x640")
         self.root.resizable(True, True)
 
         self.input_path = tk.StringVar()
@@ -120,11 +155,12 @@ class BatchConverterApp:
         self.dpi_var = tk.IntVar(value=DEFAULT_DPI)
         self.prefix_var = tk.StringVar(value="")
         self.soffice_var = tk.StringVar(value=DEFAULT_SOFFICE)
-        self.out_format_var = tk.StringVar(value="PNG 序列")
+        self.out_format_var = tk.StringVar(value=FMT_DOC_TO_PNG)
         self.is_converting = False
         self.cancelled = False
 
         self._build_ui()
+        self._on_format_change()
 
     def _build_ui(self):
         pad = {"padx": 8, "pady": 4}
@@ -152,12 +188,20 @@ class BatchConverterApp:
 
         row1 = ttk.Frame(frm3)
         row1.pack(fill="x", padx=8, pady=6)
-        ttk.Label(row1, text="输出格式:").pack(side="left")
-        ttk.Combobox(row1, textvariable=self.out_format_var, values=OUTPUT_FORMATS, state="readonly", width=12).pack(side="left", padx=(4, 16))
-        ttk.Label(row1, text="DPI:").pack(side="left")
-        ttk.Spinbox(row1, from_=72, to=300, increment=10, textvariable=self.dpi_var, width=8).pack(side="left", padx=(4, 16))
-        ttk.Label(row1, text="文件名前缀:").pack(side="left")
-        ttk.Entry(row1, textvariable=self.prefix_var, width=16).pack(side="left", padx=(4, 0))
+        ttk.Label(row1, text="转换模式:").pack(side="left")
+        self.fmt_combo = ttk.Combobox(row1, textvariable=self.out_format_var, values=OUTPUT_FORMATS, state="readonly", width=18)
+        self.fmt_combo.pack(side="left", padx=(4, 16))
+        self.fmt_combo.bind("<<ComboboxSelected>>", lambda e: self._on_format_change())
+
+        self.dpi_label = ttk.Label(row1, text="DPI:")
+        self.dpi_label.pack(side="left")
+        self.dpi_spin = ttk.Spinbox(row1, from_=72, to=300, increment=10, textvariable=self.dpi_var, width=8)
+        self.dpi_spin.pack(side="left", padx=(4, 16))
+
+        self.prefix_label = ttk.Label(row1, text="文件名前缀:")
+        self.prefix_label.pack(side="left")
+        self.prefix_entry = ttk.Entry(row1, textvariable=self.prefix_var, width=16)
+        self.prefix_entry.pack(side="left", padx=(4, 0))
 
         row2 = ttk.Frame(frm3)
         row2.pack(fill="x", padx=8, pady=(0, 6))
@@ -192,12 +236,27 @@ class BatchConverterApp:
         scroll.pack(side="right", fill="y")
         self.log_text.pack(fill="both", expand=True, padx=8, pady=6)
 
+    def _on_format_change(self):
+        """根据转换模式显示/隐藏DPI和前缀设置"""
+        fmt = self.out_format_var.get()
+        is_img_mode = (fmt == FMT_IMG_TO_PDF)
+        # 图片转PDF模式下，DPI和前缀无意义
+        state = "disabled" if is_img_mode else "normal"
+        self.dpi_label.configure(state=state)
+        self.dpi_spin.configure(state=state)
+        self.prefix_label.configure(state=state)
+        self.prefix_entry.configure(state=state)
+
     # ──────────────────────── 事件 ────────────────────────
     def _browse_file(self):
-        path = filedialog.askopenfilename(
-            title="选择文档",
-            filetypes=[("支持的格式", "*.docx *.xlsx *.pptx"), ("所有文件", "*.*")],
-        )
+        fmt = self.out_format_var.get()
+        if fmt == FMT_IMG_TO_PDF:
+            ftypes = [("图片文件", "*.png *.jpg *.jpeg *.bmp *.tiff"), ("所有文件", "*.*")]
+            title = "选择图片文件"
+        else:
+            ftypes = [("文档文件", "*.docx *.xlsx *.pptx"), ("所有文件", "*.*")]
+            title = "选择文档"
+        path = filedialog.askopenfilename(title=title, filetypes=ftypes)
         if path:
             self.input_path.set(path)
             if not self.out_dir.get():
@@ -205,7 +264,7 @@ class BatchConverterApp:
                 self.out_dir.set(d)
 
     def _browse_folder(self):
-        d = filedialog.askdirectory(title="选择包含文档的文件夹")
+        d = filedialog.askdirectory(title="选择包含文件的文件夹")
         if d:
             self.input_path.set(d)
             if not self.out_dir.get():
@@ -258,19 +317,26 @@ class BatchConverterApp:
         if not outdir:
             messagebox.showerror("错误", "请选择输出目录")
             return
-        if fitz is None and out_fmt != "PDF":
-            messagebox.showerror("错误", "PyMuPDF 未安装，无法导出图片格式")
+        if fitz is None:
+            messagebox.showerror("错误", "PyMuPDF 未安装")
             return
 
-        soffice_found = find_soffice(soffice)
-        if not soffice_found:
-            messagebox.showerror("错误", "未找到 LibreOffice (soffice.exe)")
-            return
+        is_img_mode = (out_fmt == FMT_IMG_TO_PDF)
+        target_exts = IMG_EXTS if is_img_mode else DOC_EXTS
 
-        files = collect_files(inp)
+        files = collect_files(inp, target_exts)
         if not files:
-            messagebox.showinfo("提示", "未找到任何 docx / xlsx / pptx 文件")
+            ext_name = "图片" if is_img_mode else "docx / xlsx / pptx"
+            messagebox.showinfo("提示", f"未找到任何 {ext_name} 文件")
             return
+
+        # 文档模式需要LibreOffice
+        soffice_found = None
+        if not is_img_mode:
+            soffice_found = find_soffice(soffice)
+            if not soffice_found:
+                messagebox.showerror("错误", "未找到 LibreOffice (soffice.exe)")
+                return
 
         self.lbl_count.configure(text=f"共 {len(files)} 个文件")
         self.is_converting = True
@@ -281,22 +347,45 @@ class BatchConverterApp:
         self._log("=" * 55)
         self._log(f"输入: {inp}")
         self._log(f"输出: {outdir}")
-        self._log(f"格式: {out_fmt}  DPI: {dpi}  文件数: {len(files)}")
+        self._log(f"模式: {out_fmt}  文件数: {len(files)}")
 
         t = threading.Thread(
             target=self._convert_worker,
-            args=(files, outdir, dpi, prefix, soffice_found, out_fmt),
+            args=(files, outdir, dpi, prefix, soffice_found, out_fmt, is_img_mode),
             daemon=True,
         )
         t.start()
 
-    def _convert_worker(self, files, outdir, dpi, prefix, soffice, out_fmt):
+    def _convert_worker(self, files, outdir, dpi, prefix, soffice, out_fmt, is_img_mode):
         try:
             os.makedirs(outdir, exist_ok=True)
             total = len(files)
             done = 0
-            total_pages = 0
 
+            if is_img_mode:
+                # ── 图片合并为PDF ──
+                self._log(f"\n开始合并 {total} 张图片为一个PDF...")
+                # 输出PDF名：用输入文件夹名或第一个文件名
+                if os.path.isdir(self.input_path.get().strip()):
+                    pdf_name = os.path.basename(self.input_path.get().strip()) + ".pdf"
+                else:
+                    pdf_name = os.path.splitext(os.path.basename(files[0]))[0] + "_合并.pdf"
+                if prefix:
+                    pdf_name = prefix + "_" + pdf_name
+                output_pdf = os.path.join(outdir, pdf_name)
+
+                count, _ = images_to_pdf(
+                    files, output_pdf, self._log,
+                    cancel_check=lambda: self.cancelled,
+                )
+                size_kb = os.path.getsize(output_pdf) // 1024
+                self._set_progress(total, total, "完成")
+                self._log(f"\n✓ 合并完成！{count} 张图片 → {pdf_name} ({size_kb} KB)")
+                messagebox.showinfo("完成", f"图片合并完成！\n{count} 张图片\n输出:\n{output_pdf}")
+                return
+
+            # ── 文档转换模式 ──
+            total_pages = 0
             for idx, fpath in enumerate(files):
                 if self.cancelled:
                     break
@@ -305,17 +394,14 @@ class BatchConverterApp:
                 self._log(f"\n[{idx+1}/{total}] {fname}")
                 self._set_progress(idx, total, fname)
 
-                # 每个文件输出到子目录（避免混在一起）
                 sub_name = os.path.splitext(fname)[0]
                 file_out_dir = os.path.join(outdir, sub_name)
 
-                if out_fmt == "PDF":
-                    # 直接输出 PDF 到 outdir
+                if out_fmt == FMT_DOC_TO_PDF:
                     pdf_path = doc_to_pdf(soffice, fpath, outdir, self._log)
                     size_kb = os.path.getsize(pdf_path) // 1024
                     self._log(f"  ✓ PDF 完成 ({size_kb} KB)")
                 else:
-                    # 先转 PDF 到临时目录，再转图片
                     tmp_dir = os.path.join(file_out_dir, "_tmp")
                     os.makedirs(tmp_dir, exist_ok=True)
                     pdf_path = doc_to_pdf(soffice, fpath, tmp_dir, self._log)
@@ -329,7 +415,6 @@ class BatchConverterApp:
                     total_pages += count
                     self._log(f"  ✓ {count} 页 {img_fmt} 已导出")
 
-                    # 清理临时PDF（保留则注释掉下一行）
                     try:
                         os.remove(pdf_path)
                         os.rmdir(tmp_dir)
@@ -340,7 +425,7 @@ class BatchConverterApp:
 
             self._set_progress(total, total, "完成")
             if not self.cancelled:
-                extra = f"，共 {total_pages} 张图片" if out_fmt != "PDF" else ""
+                extra = f"，共 {total_pages} 张图片" if out_fmt != FMT_DOC_TO_PDF else ""
                 self._log(f"\n{'='*55}")
                 self._log(f"✓ 全部完成！成功转换 {done}/{total} 个文件{extra}")
                 messagebox.showinfo("完成", f"转换完成！\n成功 {done}/{total} 个文件{extra}\n输出目录:\n{outdir}")
