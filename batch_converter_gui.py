@@ -111,7 +111,7 @@ def pdf_to_images(pdf_path, output_dir, dpi, img_format, prefix, log_func, cance
 class BatchConverterApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("文档批量转换工具 (Word/Excel/PPT → PDF/PNG/JPG)")
+        self.root.title("文档批量转换工具 (Word/Excel/PPT → PDF/PNG/JPG) — 南无阿弥陀佛")
         self.root.geometry("720x600")
         self.root.resizable(True, True)
 
